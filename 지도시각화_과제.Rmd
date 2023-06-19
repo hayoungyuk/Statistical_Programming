@@ -1,0 +1,383 @@
+---
+title: "Map Visualization"
+author: "Yuk HaYoung"
+date: "2023-05-21"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r}
+# **Q1. 사진위치 확인**
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(sp)
+library(tmap)
+library(leaflet)
+
+DF <- read_csv("D:/sw2023/pic_info.csv")
+str(DF)
+
+DF <- DF %>% mutate(latdms = as.character(latdms))
+sapply(DF, class)
+```
+```{r}
+DF <-
+  DF %>%
+  mutate(yy = as.numeric(str_sub(fn, 1, 4)),
+         mm = as.numeric(str_sub(fn, 5, 6)),
+         dd = as.numeric(str_sub(fn, 7, 8)),
+         H = as.numeric(substr(fn, 10, 11)),
+         M = as.numeric(substr(fn, 12, 13)),
+         S = as.numeric(substr(fn, 14, 15))) 
+
+DF <-
+  DF %>%
+  mutate(yy = lubridate::year(ymdhms),
+         mm = lubridate::month(ymdhms),
+         dd = lubridate::day(ymdhms),
+         H = lubridate::hour(ymdhms),
+         M = lubridate::minute(ymdhms),
+         S = lubridate::second(ymdhms))
+
+dms2dd <- function(deg, M, S) {
+  dd <- deg + (M/60 + S/3600)
+  dd 
+}
+
+dms2dd <- function(dms) {
+  x <- as.numeric(stringr::str_split_1(dms, ':'))
+  dd <- x[1] + (x[2]/60 + x[3]/3600)
+  dd 
+}
+
+dms2dd <- function(dms) {
+  x <- stringr::str_split_fixed(dms, ':', n=3) 
+  dimx <- dim(x)
+  x <- as.numeric(x)
+  dim(x) <- dimx
+  dd <- x[,1] + (x[,2]/60 + x[,3]/3600)
+  dd 
+}
+```
+
+```{r}
+DF <- DF %>% mutate(lon = dms2dd(londms),
+                lat = dms2dd(latdms))
+DF
+```
+
+```{r}
+PT <- st_as_sf(DF, coords=c('lon', 'lat'), crs=4326)
+PT
+plot(PT)
+```
+
+```{r}
+op <- tmap_options()
+op$basemaps
+
+tmap_options(basemaps=c('OpenStreetMap', 'Esri.WorldTopoMap', 'Esri.WorldGrayCanvas'))
+tmap_mode('view')
+tm_shape(PT) + tm_dots(col='blue') 
+
+tm_basemap('Esri.WorldTopoMap') +
+  tm_shape(PT) + tm_dots(col='blue') 
+```
+
+```{r}
+leaflet(PT) %>%
+  addTiles() %>%
+  addMarkers(label=~desc)
+```
+
+```{r}
+# **Q2. 서울지하철역**
+```
+
+```{r}
+library(tidyverse)
+library(tmap)
+library(leaflet)
+library(stringr)
+```
+
+```{r}
+### 서울 지하철역 데이터 불러오기
+subway_data <- read_csv("D:/sw2023/seoul_매트로.csv", locale=locale('ko', encoding='utf-8'))
+seoul_subway_data <-  subset(subway_data, select = c('선명', "역명", "위도", "경도", "도로명주소"))
+seoul_subway_data
+
+names(seoul_subway_data) <- c('noLine','stationName','lat','lon','addr')
+seoul_subway_data
+seoul_subway_data <- seoul_subway_data %>% dplyr::select(lon, lat, stationName, addr)
+seoul_subway_data
+
+### is.NA(seoul_subway_data)
+
+tmp_seoul_subway_data <- na.omit(seoul_subway_data[, c('lon', 'lat')])
+tmp_seoul_subway_data <- st_as_sf(tmp_seoul_subway_data, coords = c('lon', 'lat'), crs = 4326)
+
+tmp_seoul_subway_data
+```
+
+```{r}
+KRSGG <- st_read("D:/sw2023/SIG_202302/sig.shp", 
+                 options='ENCODING=EUCKR', crs=5179)  
+
+st_crs(KRSGG) 
+KRSGG <- st_make_valid(st_transform(KRSGG, crs=4326))
+
+SELG <- KRSGG %>% filter(str_sub(SIG_CD, 1,2)=='11')
+```
+
+```{r}
+leaflet(tmp_seoul_subway_data) %>%
+  addTiles()%>%
+  addPolygons(data=SELG, weight=1, label=~SIG_KOR_NM) %>%
+  addCircles()
+
+tmap_mode('view')
+tm_shape(tmp_seoul_subway_data) + tm_dots(col='blue')
+```
+
+```{r}
+SELECT_SEOUL <- seoul_subway_data %>% filter(str_sub(addr,1,2)=='서울')
+SELECT_SEOUL
+
+addr <- SELECT_SEOUL$addr
+addr
+
+distract_result <- sapply(strsplit(addr, " "), function(x) x[grep("구$", x)])
+distract_result
+
+SELECT_SEOUL <- SELECT_SEOUL %>% 
+  mutate(GU = distract_result)
+SELECT_SEOUL
+
+tmp_SELECT_SEOUL <- select(SELECT_SEOUL, stationName, GU)
+head(tmp_SELECT_SEOUL)
+tail(tmp_SELECT_SEOUL)
+
+GUBYUL <- data.frame((xtabs(~GU, data = SELECT_SEOUL)))
+head(GUBYUL)
+
+sf_use_s2(FALSE)
+```
+
+```{r}
+GUBYUL
+
+ggplot(GUBYUL, aes(reorder(GU, Freq), Freq, fill = GU)) +
+  geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(x = "구", y = "Freq", fill = "구")
+```
+
+```{r}
+## **지하철역의 Heatmap을 그리시오**
+seoul_map <- sf::st_read("https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json")
+
+seoul_map <- seoul_map %>% 
+  dplyr::select(name, geometry)
+
+GUBYUL_map <- dplyr::left_join(seoul_map, GUBYUL, by = c("name" = "GU"))
+```
+
+```{r}
+GUBYUL
+```
+
+```{r}
+library(RColorBrewer)
+```
+
+```{r}
+ggplot(GUBYUL_map) +
+  geom_sf(aes(fill = Freq)) +
+  scale_fill_gradientn(colors = brewer.pal(9, "YlOrRd"), na.value = "transparent") +
+  labs(title = "서울시 구별 지하철 수 Heatmap") +
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.5, size = 16))
+```
+
+```{r}
+# **Q3. 20대 대선 시각화**
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(sf)
+library(leaflet)
+library(tmap)
+library(viridis)
+library(ggplot2)
+```
+
+```{r}
+fd <- 'D:/sw2023/'
+fn <- paste0(fd, '중앙선거관리위원회_제20대 대통령선거 투표구별 개표자료_20220309.xlsx')
+DF20 <- read_excel(fn)
+```
+
+```{r}
+DF20 <- DF20 %>% select('시도':'국민의힘\r\n윤석열') 
+names(DF20) <- c('sido','sgg','emd','precinct','nregis', 'nvote', 'LJM', 'YSY')
+
+DF20 <- DF20 %>% 
+  mutate(nregis = as.numeric(str_remove_all(nregis, ',')),
+         nvote  = as.numeric(str_remove_all(nvote, ',')),
+         LJM    = as.numeric(str_remove_all(LJM, ',')),
+         YSY    = as.numeric(str_remove_all(YSY, ','))) 
+DF20
+
+DF20 <- DF20 %>%
+  filter(sido=='서울특별시', emd=='합계') %>%
+  select(-sido, -emd, -precinct) %>%
+  mutate(turnout = nvote/nregis)
+
+DF20
+```
+
+```{r}
+### 대선결과 강의자료 실행
+
+KRSGG <- st_read("D:/sw2023/SIG_202302/sig.shp", 
+                 options='ENCODING=EUCKR', crs=5179)  
+
+st_crs(KRSGG) 
+KRSGG <- st_make_valid(st_transform(KRSGG, crs=4326))
+
+SELG <- KRSGG %>% filter(str_sub(SIG_CD, 1,2)=='11')
+
+leaflet(SELG) %>% 
+  addTiles() %>% 
+  addPolygons(weight=1, label=~SIG_KOR_NM) 
+
+tmap_mode('view')
+tm_basemap('Esri.WorldTopoMap') + 
+  tm_shape(SELG) + tm_borders(col='blue', lwd=2) 
+
+SELG <- SELG %>% select(-SIG_ENG_NM)
+
+SELG <- SELG %>% left_join(DF20, by=c('SIG_KOR_NM'='sgg'))
+SELG
+```
+
+```{r}
+mylabels <-  sprintf('%s <br>투표율 %4.3g', SELG$SIG_KOR_NM, SELG$turnout)
+
+mylabels <- lapply(mylabels, htmltools::HTML)
+
+leaflet(SELG) %>% 
+  addTiles() %>% 
+  addPolygons(weight=3, label=mylabels) # fill=~turnout (X)=> turnout이 연속형 색표시 불가
+```
+
+```{r}
+pal  <- colorNumeric(palette='viridis', domain=SELG$turnout)
+qpal <- colorQuantile(palette='viridis', domain=SELG$turnout, n=4)
+bpal <- colorBin(palette='viridis', domain=SELG$turnout, bins=4) #, pretty=FALSE)
+
+leaflet(SELG) %>% 
+  addTiles() %>% 
+  addPolygons(weight=3,           # 면, 경계선 굵기
+              label=mylabels,     # 레이블 내용
+              opacity=0.8,        # 불투명도
+              fill=~turnout,      # 채우기 변수
+              fillColor=~qpal(turnout), # 채우기색: 위의 qpal함수이용 
+              fillOpacity=0.8) %>%   
+  addLegend(pal=qpal,               # 범례 추가
+            values=~turnout,        # SELG$turnout, 오류발생시 대체해볼것
+            opacity=1,              # 범례 불투명도
+            title='4분위 그룹(~25~50~75~)',  # 범례 타이틀
+            position='bottomright') # 범례 위치   
+
+leaflet(SELG) %>%
+  addTiles() %>%
+  addPolygons(# data=SELG,   => leaflet에서 지정권장
+    fillColor=~bpal(turnout),   # 투표율을 4개 bin으로 표시
+    weight=2,                   # 구경계 굵기
+    opacity=1,                  # 구경계 불투명도 1 (기본값=0.5) 
+    color='white',              # 구경계 색  
+    dashArray='3',              # 구경계 대시 개수 (기본값 NULL)  
+    fillOpacity=0.75,           # 구 투명도 (기본값 0.2)
+    label=mylabels,             # HTML문자 벡터 또는 리스트
+    highlightOptions=highlightOptions( # highlight옵션
+      weight=5,
+      color='orange',
+      dashArray='',
+      fillOpacity=0.7,
+      bringToFront=TRUE),
+    labelOptions=labelOptions(
+      style=list('font-weight'='normal', padding='3px 8px'),
+      textsize='15px',
+      direction='auto')) %>%
+  addLegend(
+    pal=bpal,
+    values=~turnout, # SELG$turnout,  # values = ~turnout,
+    opacity=0.7, 
+    title='투표율(4분위 그룹)',
+    position='bottomright')
+```
+
+```{r}
+SELG <- 
+  SELG %>% mutate(Lwins = factor(ifelse(LJM>YSY, '1이재명', '2윤석열')))
+
+mylabels <-  sprintf('%s <br>이재명 %g<br>윤석열 %g', SELG$SIG_KOR_NM, SELG$LJM/1000, SELG$YSY/1000)
+mylabels <- lapply(mylabels, htmltools::HTML)
+
+fpal <- colorFactor(palette='viridis', domain=SELG$Lwins) 
+leaflet(SELG) %>%
+  addTiles() %>%
+  addPolygons(# data=SELG,   => leaflet에서 지정권장
+    fillColor=~fpal(Lwins),   # 투표율을 4개 bin으로 표시
+    weight=2,                   # 구경계 굵기
+    opacity=1,                  # 구경계 선투명도 1 (기본값=0.5) 
+    color='white',              # 구경계 색  
+    dashArray='3',              # 구경계 대시 개수 (기본값 NULL)  
+    fillOpacity=0.75,           # 구 투명도 (기본값 0.2)
+    label=mylabels,             # HTML문자 벡터 또는 리스트
+    highlightOptions=highlightOptions( # highlight옵션
+      weight=5,
+      color='orange',
+      dashArray='',
+      fillOpacity=0.7,
+      bringToFront=TRUE),
+    labelOptions=labelOptions(
+      style=list('font-weight'='normal', padding='3px 8px'),
+      textsize='15px',
+      direction='auto')) %>%
+  addLegend(
+    pal=fpal,
+    values=~Lwins, # SELG$turnout,  # values = ~turnout,
+    opacity=0.7, 
+    title='득표결과',
+    position='bottomright')
+```
+
+```{r}
+## **LJM과 YSY 득표수의 차이 추가 && 구별 득표수 차이를 시각화**
+DF20
+
+Q3_DF20 <- DF20 %>% mutate(LJMMinusYSY = LJM-YSY)
+Q3_DF20
+
+LMY_DF20 <- Q3_DF20[, c("sgg", "LJMMinusYSY")]
+LMY_DF20
+```
+
+```{r}
+library(ggtext)
+```
+
+```{r}
+ggplot(LMY_DF20, aes(x = sgg, y = LJMMinusYSY)) +
+  geom_bar(stat = "identity", fill = "blue", width = 0.5) +
+  labs(x = "구", y = "득표수 차이", title = "LJM Minus YSY 구별 득표수 차이",legend.box = "horizontal") +
+  theme(axis.text.x = element_markdown(angle = 90))
+```
